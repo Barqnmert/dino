@@ -11,6 +11,10 @@ using UnityEngine;
 // "outward" side is also detected from its actual world position at startup (rather than
 // assumed) so the wave always swings away from the body regardless of which way the FBX
 // import happened to orient left/right.
+//
+// All timed motion goes through the Ease helper (standard cubic/back easing curves) instead
+// of raw linear/lerp so the motion accelerates and settles the way hand-animated game juice
+// does, rather than moving at a constant robotic speed.
 public class DinoIdleController : MonoBehaviour
 {
     [Header("Bone References (auto-found by name if left empty)")]
@@ -45,6 +49,21 @@ public class DinoIdleController : MonoBehaviour
 
     private bool isPlayingIdleAction;
     private Coroutine triggeredActionRoutine;
+
+    private static class Ease
+    {
+        public static float InCubic(float t) => t * t * t;
+        public static float OutCubic(float t) => 1f - Mathf.Pow(1f - t, 3f);
+        public static float InOutCubic(float t) => t < 0.5f ? 4f * t * t * t : 1f - Mathf.Pow(-2f * t + 2f, 3f) / 2f;
+
+        public static float OutBack(float t)
+        {
+            const float c1 = 1.70158f;
+            const float c3 = c1 + 1f;
+            float x = t - 1f;
+            return 1f + c3 * x * x * x + c1 * x * x;
+        }
+    }
 
     private void Awake()
     {
@@ -148,8 +167,9 @@ public class DinoIdleController : MonoBehaviour
         while (t < duration)
         {
             t += Time.deltaTime;
-            float easeOutAndBack = Mathf.Sin(Mathf.Clamp01(t / duration) * Mathf.PI);
-            head.rotation = Quaternion.AngleAxis(-easeOutAndBack * maxTiltBackDegrees, transform.right) * headBaseWorldRot;
+            float linear = Mathf.Clamp01(t / duration);
+            float envelope = Mathf.Sin(Ease.InOutCubic(linear) * Mathf.PI);
+            head.rotation = Quaternion.AngleAxis(-envelope * maxTiltBackDegrees, transform.right) * headBaseWorldRot;
             yield return null;
         }
         head.rotation = headBaseWorldRot;
@@ -158,20 +178,20 @@ public class DinoIdleController : MonoBehaviour
     private IEnumerator Wave()
     {
         if (!upperArmR) yield break;
-        const float raiseDuration = 0.4f;
+        const float raiseDuration = 0.35f;
         const float waveDuration = 1.2f;
-        const float lowerDuration = 0.4f;
-        const float raisedAngle = 100f;
-        const float headTurnDegrees = 18f;
+        const float lowerDuration = 0.35f;
+        const float raisedAngle = 95f;
 
         float t = 0f;
         while (t < raiseDuration)
         {
             t += Time.deltaTime;
-            float p = Mathf.Clamp01(t / raiseDuration);
-            ApplyArmRaise(Mathf.Lerp(0f, raisedAngle, p), 0f);
-            ApplyHeadTowardArm(p);
-            SetBlendShape(smileBlendIndex, p);
+            float linear = Mathf.Clamp01(t / raiseDuration);
+            float p = Ease.OutBack(linear); // snappy raise with a tiny overshoot bounce
+            ApplyArmRaise(raisedAngle * p, 0f);
+            ApplyHeadTowardArm(Mathf.Clamp01(p));
+            SetBlendShape(smileBlendIndex, Ease.OutCubic(linear));
             yield return null;
         }
 
@@ -179,7 +199,8 @@ public class DinoIdleController : MonoBehaviour
         while (t < waveDuration)
         {
             t += Time.deltaTime;
-            float wiggle = Mathf.Sin(t * 10f) * 15f;
+            float fadeIn = Mathf.Clamp01(t / 0.3f);
+            float wiggle = Mathf.Sin(t * 9f) * 14f * fadeIn;
             ApplyArmRaise(raisedAngle, wiggle);
             ApplyHeadTowardArm(1f);
             yield return null;
@@ -189,8 +210,9 @@ public class DinoIdleController : MonoBehaviour
         while (t < lowerDuration)
         {
             t += Time.deltaTime;
-            float p = Mathf.Clamp01(t / lowerDuration);
-            ApplyArmRaise(Mathf.Lerp(raisedAngle, 0f, p), 0f);
+            float linear = Mathf.Clamp01(t / lowerDuration);
+            float p = Ease.InCubic(linear);
+            ApplyArmRaise(raisedAngle * (1f - p), 0f);
             ApplyHeadTowardArm(1f - p);
             SetBlendShape(smileBlendIndex, 1f - p);
             yield return null;
@@ -221,14 +243,14 @@ public class DinoIdleController : MonoBehaviour
 
     private IEnumerator Smile()
     {
-        const float inDuration = 0.35f;
+        const float inDuration = 0.3f;
         const float holdDuration = 1.0f;
-        const float outDuration = 0.4f;
+        const float outDuration = 0.45f;
         float t = 0f;
         while (t < inDuration)
         {
             t += Time.deltaTime;
-            float p = Mathf.Clamp01(t / inDuration);
+            float p = Ease.OutCubic(Mathf.Clamp01(t / inDuration));
             SetBlendShape(smileBlendIndex, p);
             SetBlendShape(eyesWideBlendIndex, p * 0.6f);
             yield return null;
@@ -238,7 +260,7 @@ public class DinoIdleController : MonoBehaviour
         while (t < outDuration)
         {
             t += Time.deltaTime;
-            float p = Mathf.Clamp01(t / outDuration);
+            float p = Ease.InCubic(Mathf.Clamp01(t / outDuration));
             SetBlendShape(smileBlendIndex, 1f - p);
             SetBlendShape(eyesWideBlendIndex, (1f - p) * 0.6f);
             yield return null;
@@ -248,72 +270,75 @@ public class DinoIdleController : MonoBehaviour
     }
 
     // A proper squash-and-stretch jump: crouch down to gather force (anticipation), spring
-    // up off the ground with a stretched pose, hang briefly with wide excited eyes, then land
-    // and squash back down before settling.
+    // up off the ground with a stretched pose, arc through the air, then land and squash back
+    // down before settling with a tiny bounce.
     private IEnumerator Jump()
     {
-        const float crouchDuration = 0.18f;
-        const float launchDuration = 0.16f;
-        const float airDuration = 0.35f;
-        const float landDuration = 0.22f;
-        const float settleDuration = 0.15f;
+        const float crouchDuration = 0.16f;
+        const float launchDuration = 0.14f;
+        const float airDuration = 0.38f;
+        const float landDuration = 0.16f;
+        const float settleDuration = 0.25f;
 
         const float crouchSquash = 0.22f;   // wider + shorter while gathering force
         const float launchStretch = 0.28f;  // taller + thinner while springing up
         const float jumpHeight = 0.18f;
-        const float landSquash = 0.18f;
+        const float landSquash = 0.20f;
 
         float t = 0f;
 
-        // Anticipation: squash down.
+        // Anticipation: squash down, accelerating into the crouch.
         while (t < crouchDuration)
         {
             t += Time.deltaTime;
-            float p = Mathf.Clamp01(t / crouchDuration);
+            float p = Ease.InCubic(Mathf.Clamp01(t / crouchDuration));
             ApplyBodySquashStretch(-crouchSquash * p, 0f);
             yield return null;
         }
 
-        // Launch: stretch tall and lift off.
+        // Launch: stretch tall and lift off fast, decelerating toward the top.
         t = 0f;
         while (t < launchDuration)
         {
             t += Time.deltaTime;
-            float p = Mathf.Clamp01(t / launchDuration);
+            float p = Ease.OutCubic(Mathf.Clamp01(t / launchDuration));
             ApplyBodySquashStretch(Mathf.Lerp(-crouchSquash, launchStretch, p), jumpHeight * p);
             SetBlendShape(eyesWideBlendIndex, p);
             yield return null;
         }
 
-        // Airborne hang.
+        // Airborne arc: a proper parabola (matches how a real jump decelerates/accelerates
+        // under gravity) rather than a sine hang.
         t = 0f;
         while (t < airDuration)
         {
             t += Time.deltaTime;
             float p = Mathf.Clamp01(t / airDuration);
-            float hangHeight = jumpHeight + Mathf.Sin(p * Mathf.PI) * 0.05f;
-            ApplyBodySquashStretch(Mathf.Lerp(launchStretch, 0.05f, p), hangHeight);
+            float arc = 1f - (2f * p - 1f) * (2f * p - 1f); // 0 -> 1 -> 0 parabola
+            float hangHeight = jumpHeight + arc * 0.06f;
+            float stretchAmount = Mathf.Lerp(launchStretch, 0.04f, Ease.InOutCubic(p));
+            ApplyBodySquashStretch(stretchAmount, hangHeight);
             yield return null;
         }
 
-        // Landing: squash down on impact.
+        // Landing: squash down hard on impact.
         t = 0f;
         while (t < landDuration)
         {
             t += Time.deltaTime;
-            float p = Mathf.Clamp01(t / landDuration);
-            ApplyBodySquashStretch(Mathf.Lerp(0.05f, -landSquash, p), Mathf.Lerp(jumpHeight * 0.2f, 0f, p));
+            float p = Ease.InCubic(Mathf.Clamp01(t / landDuration));
+            ApplyBodySquashStretch(Mathf.Lerp(0.04f, -landSquash, p), Mathf.Lerp(jumpHeight * 0.2f, 0f, p));
             SetBlendShape(eyesWideBlendIndex, 1f - p);
             yield return null;
         }
 
-        // Settle back to normal.
+        // Settle: spring back to normal with a small overshoot bounce.
         t = 0f;
         while (t < settleDuration)
         {
             t += Time.deltaTime;
-            float p = Mathf.Clamp01(t / settleDuration);
-            ApplyBodySquashStretch(Mathf.Lerp(-landSquash, 0f, p), 0f);
+            float p = Ease.OutBack(Mathf.Clamp01(t / settleDuration));
+            ApplyBodySquashStretch(Mathf.LerpUnclamped(-landSquash, 0f, p), 0f);
             yield return null;
         }
 
