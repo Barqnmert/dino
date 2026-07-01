@@ -37,6 +37,14 @@ public class DinoIdleController : MonoBehaviour
     [SerializeField] private float idleIntervalMin = 5f;
     [SerializeField] private float idleIntervalMax = 12f;
 
+    [Header("Liveliness (Pou-style always-alive idle)")]
+    [SerializeField] private float blinkIntervalMin = 2.5f;
+    [SerializeField] private float blinkIntervalMax = 5.5f;
+    [SerializeField] private float bobAmount = 0.012f;
+    [SerializeField] private float bobDuration = 1.7f;
+    [SerializeField] private float headSwayDegrees = 4f;
+    [SerializeField] private float headSwayDuration = 3.2f;
+
     private Vector3 spineBaseScale = Vector3.one;
     private Quaternion headBaseWorldRot;
     private Quaternion armRBaseWorldRot;
@@ -46,6 +54,7 @@ public class DinoIdleController : MonoBehaviour
 
     private int smileBlendIndex = -1;
     private int eyesWideBlendIndex = -1;
+    private int blinkBlendIndex = -1;
 
     private bool isPlayingIdleAction;
     private Coroutine triggeredActionRoutine;
@@ -90,6 +99,7 @@ public class DinoIdleController : MonoBehaviour
         {
             smileBlendIndex = faceRenderer.sharedMesh.GetBlendShapeIndex("Smile");
             eyesWideBlendIndex = faceRenderer.sharedMesh.GetBlendShapeIndex("EyesWide");
+            blinkBlendIndex = faceRenderer.sharedMesh.GetBlendShapeIndex("Blink");
         }
     }
 
@@ -97,6 +107,8 @@ public class DinoIdleController : MonoBehaviour
     {
         StartCoroutine(BreathingLoop());
         StartCoroutine(RandomIdleLoop());
+        StartCoroutine(BlinkLoop());
+        StartCoroutine(IdleLivelinessLoop());
     }
 
     private void OnMouseDown()
@@ -134,6 +146,62 @@ public class DinoIdleController : MonoBehaviour
             yield return new WaitForSeconds(Random.Range(idleIntervalMin, idleIntervalMax));
             if (!isPlayingIdleAction)
                 yield return StartCoroutine(PlayRandomIdleAction());
+        }
+    }
+
+    // A quick, periodic blink -- one of the simplest "this character is alive" cues (classic
+    // Pou-style personality). Skipped while a bigger action is using the face already.
+    private IEnumerator BlinkLoop()
+    {
+        while (true)
+        {
+            yield return new WaitForSeconds(Random.Range(blinkIntervalMin, blinkIntervalMax));
+            if (isPlayingIdleAction || blinkBlendIndex < 0) continue;
+
+            const float closeDuration = 0.07f;
+            const float holdDuration = 0.03f;
+            const float openDuration = 0.11f;
+            float t = 0f;
+            while (t < closeDuration)
+            {
+                t += Time.deltaTime;
+                SetBlendShape(blinkBlendIndex, Ease.OutCubic(Mathf.Clamp01(t / closeDuration)));
+                yield return null;
+            }
+            yield return new WaitForSeconds(holdDuration);
+            t = 0f;
+            while (t < openDuration)
+            {
+                t += Time.deltaTime;
+                SetBlendShape(blinkBlendIndex, 1f - Ease.InCubic(Mathf.Clamp01(t / openDuration)));
+                yield return null;
+            }
+            SetBlendShape(blinkBlendIndex, 0f);
+        }
+    }
+
+    // Keeps the character subtly bouncing and swaying even when no named action is playing,
+    // so it never looks like a static prop between behaviours.
+    private IEnumerator IdleLivelinessLoop()
+    {
+        float t = 0f;
+        while (true)
+        {
+            t += Time.deltaTime;
+            if (!isPlayingIdleAction)
+            {
+                float bobPhase = (t / bobDuration) * Mathf.PI * 2f;
+                float bob = (Mathf.Sin(bobPhase) * 0.5f + 0.5f) * bobAmount;
+                transform.localPosition = bodyBaseLocalPos + new Vector3(0f, bob, 0f);
+
+                if (head)
+                {
+                    float swayPhase = (t / headSwayDuration) * Mathf.PI * 2f;
+                    float sway = Mathf.Sin(swayPhase) * headSwayDegrees;
+                    head.rotation = Quaternion.AngleAxis(sway, transform.up) * headBaseWorldRot;
+                }
+            }
+            yield return null;
         }
     }
 
