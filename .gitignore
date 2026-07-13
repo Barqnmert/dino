@@ -31,3 +31,8 @@ crashlytics-build.properties
 
 # Claude Code local session data
 /.claude/
+
+# Environment variables (never commit secrets)
+.env
+.env.local
+.env.*.local
